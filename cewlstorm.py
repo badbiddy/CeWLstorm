@@ -41,8 +41,9 @@ def fetch_with_selenium(url, user_agent, proxy):
     time.sleep(2)
 
     html = driver.page_source
-    print(f"[DEBUG] Selenium fetched {len(html)} bytes from {url}")
-    print(f"[DEBUG] First 500 characters of JS-rendered page:\n{html[:500]}")
+    if args.verbose:
+        print(f"[DEBUG] Selenium fetched {len(html)} bytes from {url}")
+        print(f"[DEBUG] First 500 characters of JS-rendered page:\n{html[:500]}")
 
     driver.quit()
     return html
@@ -57,7 +58,8 @@ def extract_words(html, min_length):
         and len(t.strip()) > 0
     ])
 
-    print(f"[DEBUG] Extracted raw text (first 500 chars): {text[:500]}")
+    if args.verbose:
+        print(f"[DEBUG] Extracted raw text (first 500 chars): {text[:500]}")
 
     words = set(filter(lambda w: len(w) >= min_length and w.isalpha() and w.lower() not in common_ignore_words, text.split()))
 
@@ -67,9 +69,7 @@ def extract_words(html, min_length):
         wordlist.add(word.upper())  # Uppercase variation
         wordlist.add(word.lower())  # Lowercase variation
 
-    print(f"[DEBUG] Extracted words (including variations): {len(wordlist)} found")
-    if wordlist:
-        print(f"[DEBUG] Sample words: {list(wordlist)[:10]}")
+    print(f"[INFO] Extracted {len(wordlist)} words (including variations)")
 
 def load_wifi_names(file_path):
     """Load Wi-Fi names from a user-specified file."""
@@ -130,6 +130,7 @@ def main():
     parser.add_argument("-js", "--include-js", action="store_true", help="Include JavaScript-rendered words (requires Selenium)")
     parser.add_argument("-wl", "--wordlist", default="wordlist.txt", help="Output wordlist filename")
     parser.add_argument("--wifi-names", help="File containing Wi-Fi names to prepend/append to the wordlist")
+    parser.add_argument("--verbose", action="store_true", help="Enable detailed debug output")
 
     global args
     args = parser.parse_args()
