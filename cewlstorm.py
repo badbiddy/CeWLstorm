@@ -14,146 +14,135 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 visited_urls = set()
-extracted_usernames = set()
-extracted_passwords = set()
 wordlist = set()
 
-def fetch_page(url, user_agent, proxy):
-    """Fetch a webpage with optional proxy."""
-    headers = {"User-Agent": user_agent}
-    proxies = {"http": proxy, "https": proxy} if proxy else None
-
-    try:
-        response = requests.get(url, headers=headers, proxies=proxies, timeout=10)
-        response.raise_for_status()
-        return response.text
-    except requests.RequestException:
-        return None
+common_ignore_words = {
+    "the", "and", "for", "with", "from", "about", "this", "that", "you",
+    "your", "our", "their", "have", "has", "will", "was", "were", "can",
+    "not", "are", "but", "should", "would", "which", "who", "what", "where"
+}
 
 def fetch_with_selenium(url, user_agent, proxy):
-    """Fetch JavaScript-rendered content using Selenium."""
+    """Fetch JavaScript-rendered content using Selenium, ensuring full load."""
     options = Options()
-    options.add_argument("--headless")
+    options.add_argument("--disable-blink-features=AutomationControlled")  # Avoid headless detection
+    options.add_argument("--headless=new")  # New headless mode
     options.add_argument(f"user-agent={user_agent}")
     if proxy:
         options.add_argument(f"--proxy-server={proxy}")
 
     driver = webdriver.Chrome(options=options)
-    driver.get(url)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")  # Bypass detection
 
+    driver.get(url)
     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")  # Ensure full content loads
+    time.sleep(2)
+
     html = driver.page_source
+    print(f"[DEBUG] Selenium fetched {len(html)} bytes from {url}")
+    print(f"[DEBUG] First 500 characters of JS-rendered page:\n{html[:500]}")
+
     driver.quit()
     return html
 
 def extract_words(html, min_length):
-    """Extract words for wordlist generation."""
+    """Extract only meaningful, visible words and generate variations."""
     soup = BeautifulSoup(html, "html.parser")
-    text = " ".join([t.strip() for t in soup.find_all(string=True) if t.parent.name not in ["script", "style"]])
-    words = set(filter(lambda w: len(w) >= min_length, text.split()))
-    wordlist.update(words)
 
-def extract_usernames(html):
-    """Extract usernames from potential login areas or emails."""
-    usernames = set(re.findall(r"@([a-zA-Z0-9_.-]+)", html))  
-    usernames.update(re.findall(r"/users/([a-zA-Z0-9_.-]+)", html))  
-    extracted_usernames.update(usernames)
+    text = " ".join([
+        t.strip() for t in soup.find_all(string=True)
+        if t.parent.name not in ["script", "style", "noscript", "meta", "link", "head", "title"]
+        and len(t.strip()) > 0
+    ])
 
-def extract_passwords(html):
-    """Extract common password patterns (basic heuristic)."""
-    passwords = set(re.findall(r'password["\']?\s*[:=]\s*["\']?([a-zA-Z0-9@#$%^&*]+)', html, re.IGNORECASE))
-    extracted_passwords.update(passwords)
+    print(f"[DEBUG] Extracted raw text (first 500 chars): {text[:500]}")
 
-def extract_words_from_pdf(url):
-    """Extract words from PDFs."""
-    words = set()
-    try:
-        response = requests.get(url, stream=True, timeout=10)
-        with open("temp.pdf", "wb") as f:
-            f.write(response.content)
-        
-        with pdfplumber.open("temp.pdf") as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    words.update(set(text.split()))
-        
-        os.remove("temp.pdf")
-    except:
-        pass
+    words = set(filter(lambda w: len(w) >= min_length and w.isalpha() and w.lower() not in common_ignore_words, text.split()))
 
-    wordlist.update(words)
+    # Store original, uppercase, and lowercase versions
+    for word in words:
+        wordlist.add(word)  # Original format
+        wordlist.add(word.upper())  # Uppercase variation
+        wordlist.add(word.lower())  # Lowercase variation
 
-def mutate_words(wifi_names):
-    """Generate wordlist mutations for password cracking."""
-    mutations = set()
-    leet_map = {"a": "@", "e": "3", "i": "1", "o": "0", "s": "$", "t": "7"}
+    print(f"[DEBUG] Extracted words (including variations): {len(wordlist)} found")
+    if wordlist:
+        print(f"[DEBUG] Sample words: {list(wordlist)[:10]}")
 
-    for word in list(wordlist):
-        mutations.add(word[::-1])  # Reverse words
-        mutations.add(word + "123")  # Append common numbers
-        mutations.add(word + "2024")  # Append the current year
-        mutations.add("".join(leet_map.get(c, c) for c in word))  # Leetspeak
+def load_wifi_names(file_path):
+    """Load Wi-Fi names from a user-specified file."""
+    wifi_names = []
+    if file_path and os.path.isfile(file_path):
+        with open(file_path, "r") as f:
+            wifi_names = [line.strip() for line in f.readlines()]
+    return wifi_names
 
-    # Add company Wi-Fi names as base words
+def append_wifi_mutations(wifi_names):
+    """Prepend and append Wi-Fi names to extracted words."""
+    if not wifi_names:
+        return
+
+    wifi_mutations = set()
+
     for wifi in wifi_names:
-        mutations.add(wifi)
-        mutations.add(wifi.lower())
-        mutations.add(wifi.upper())
-        mutations.add(wifi + "123")
-        mutations.add(wifi + "2024")
-        mutations.add(wifi[::-1])  # Reverse Wi-Fi name
+        wifi = wifi.lower()  # Normalize Wi-Fi names to lowercase
 
-    wordlist.update(mutations)
+        # Basic Wi-Fi name mutations
+        wifi_mutations.update([
+            wifi, wifi.upper(), wifi + "123", wifi + "2024"
+        ])
 
-def crawl(url, depth, threads, include_js, include_pdf, user_agent, proxy):
-    """Recursively crawl a website using multithreading."""
+        # Prepend and append Wi-Fi names to each extracted word
+        for word in list(wordlist):
+            wifi_mutations.add(wifi + word)  # Prepend Wi-Fi name
+            wifi_mutations.add(word + wifi)  # Append Wi-Fi name
+
+    wordlist.update(wifi_mutations)
+    print(f"[INFO] Added {len(wifi_mutations)} Wi-Fi-based mutations to the wordlist")
+
+def save_wordlist(filename):
+    """Save final wordlist to a file, ensuring words are sorted and unique."""
+    sorted_words = sorted(wordlist)
+    with open(filename, "w") as f:
+        for word in sorted_words:
+            f.write(word + "\n")
+
+    print(f"[INFO] Wordlist saved to {filename} ({len(sorted_words)} words)")
+
+def crawl(url, depth, include_js, user_agent, proxy, min_length):
+    """Recursively crawl a website."""
     if depth == 0 or url in visited_urls:
         return
 
     visited_urls.add(url)
-    html = fetch_with_selenium(url, user_agent, proxy) if include_js else fetch_page(url, user_agent, proxy)
+    html = fetch_with_selenium(url, user_agent, proxy) if include_js else None
 
     if html:
-        extract_words(html, args.min_word_length)
-        extract_usernames(html)
-        extract_passwords(html)
-        if include_pdf:
-            extract_words_from_pdf(url)
-
-    save_wordlist(args.wordlist)
-
-def save_wordlist(filename):
-    """Save final wordlist to a file."""
-    with open(filename, "w") as f:
-        for word in sorted(wordlist):
-            f.write(word + "\n")
+        extract_words(html, min_length)
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="CeWLstorm - Custom Word List Generator for WPA2-PSK & Pentesting",
-        usage="cewlstorm.py -h | options url",
-        formatter_class=argparse.RawTextHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description="CeWLstorm - Custom Word List Generator for WPA2-PSK & Pentesting")
 
-    parser.add_argument("url", help="URL to start crawling from")
+    parser.add_argument("url", type=str, help="URL to start crawling from")
     parser.add_argument("-d", "--depth", type=int, default=2, help="Recursion depth (default: 2)")
-    parser.add_argument("-t", "--threads", type=int, default=5, help="Number of concurrent threads (default: 5)")
     parser.add_argument("-js", "--include-js", action="store_true", help="Include JavaScript-rendered words (requires Selenium)")
-    parser.add_argument("-pdf", "--include-pdf", action="store_true", help="Extract words from PDFs")
     parser.add_argument("-wl", "--wordlist", default="wordlist.txt", help="Output wordlist filename")
-    parser.add_argument("-p", "--proxy", help="Use a proxy (format: http://127.0.0.1:8080)")
-    parser.add_argument("-r", "--rate", type=int, default=10, help="Requests per second (default: 10)")
-    parser.add_argument("--mutate", action="store_true", help="Apply wordlist mutations")
-    parser.add_argument("--wifi-names", nargs="+", help="List of company Wi-Fi network names for targeted wordlist generation")
+    parser.add_argument("--wifi-names", help="File containing Wi-Fi names to prepend/append to the wordlist")
 
     global args
     args = parser.parse_args()
 
-    crawl(args.url, args.depth, args.threads, args.include_js, args.include_pdf, "Mozilla/5.0", args.proxy)
+    # Run the main crawling process
+    crawl(args.url, args.depth, args.include_js, "Mozilla/5.0", None, 5)
 
-    if args.mutate:
-        mutate_words(args.wifi_names or [])
+    # Load Wi-Fi names and apply mutations before saving
+    wifi_names = load_wifi_names(args.wifi_names)
+    append_wifi_mutations(wifi_names)
+
+    # Save the final wordlist
+    save_wordlist(args.wordlist)
 
 if __name__ == "__main__":
     main()
