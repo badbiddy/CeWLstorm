@@ -22,4 +22,4 @@ CeWLstorm is inspired by and builds upon the incredible work of the original CeW
 - CeWL: Created by Robin Wood (digininja) - https://digi.ninja/projects/cewl.php
 - CeWLeR: Created by Roy Solberg - https://github.com/roys/cewler
 
-Thank you for your pioneering work in custom wordlist generation, which inspired the development of CeWLstorm. ⚡🔥
+Thank you for your pioneering work in custom wordlist generation, which inspired the development of CeWLstorm. 
